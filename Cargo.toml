@@ -1,0 +1,15 @@
+[package]
+name = "bfiles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam = "0.8.4"
+dashmap = "6"
+indicatif = "0.18.4"
+num_cpus = "1.17.0"
+rayon = "1.11.0"
+
+
+[lib]
+path = "src/lib.rs"

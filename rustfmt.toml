@@ -1,0 +1,8 @@
+fn_args_layout = "Compressed"
+max_width = 120
+struct_lit_width = 100
+chain_width = 100
+array_width = 20
+
+wrap_comments = true
+comment_width = 100
