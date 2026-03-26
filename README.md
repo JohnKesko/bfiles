@@ -1,6 +1,6 @@
 # bfiles
 
-A very fast directory size analyzer written in Rust.   
+bfiles (big files) is a very fast directory size analyzer written in Rust.   
 Provide a path to find which folders eating up the most space.
 
 Uses concurrent traversal (crossbeam or rayon) to scan directories quickly.
