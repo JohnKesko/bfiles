@@ -1,7 +1,6 @@
 # bfiles
 
 bfiles (big files) is a fast directory size analyzer written in Rust.
-
 Provide a path to find which folders are using the most disk space.
 
 ## Installation
