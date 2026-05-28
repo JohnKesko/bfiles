@@ -1,8 +1,11 @@
-name: CI
+name: Release
 
 on:
   push:
-  pull_request:
+    branches:
+      - master
+    tags:
+      - "v*"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -14,22 +17,202 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ubuntu-24.04
-            runner: ubuntu-24.04
-          - name: macos-15
-            runner: macos-15
-          - name: windows-2025
-            runner: windows-2025
+        fail-fast: false
+        matrix:
+          include:
+            - name: ubuntu-24.04
+              runner: ubuntu-24.04
+            - name: macos-15
+              runner: macos-15
+            - name: windows-2025
+              runner: windows-2025
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run test suite
         run: cargo test --all-targets
+
+  prepare-release:
+    name: Prepare release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve-tag.outputs.tag }}
+
+    steps:
+      - name: Resolve release tag
+        id: resolve-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.resolve-tag.outputs.tag }}
+
+      - name: Ensure GitHub draft release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.resolve-tag.outputs.tag }}"
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --generate-notes \
+              --draft
+          fi
+
+  build-release:
+    name: Build (${{ matrix.name }})
+    needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary_name: bfiles
+            asset_suffix: linux-x86_64
+            archive_extension: tar.gz
+
+          - name: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            binary_name: bfiles
+            asset_suffix: macos-arm64
+            archive_extension: tar.gz
+
+          - name: macos-x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary_name: bfiles
+            asset_suffix: macos-x86_64
+            archive_extension: tar.gz
+
+          - name: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            binary_name: bfiles.exe
+            asset_suffix: windows-x86_64
+            archive_extension: zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          archive_root="bfiles-${tag}-${{ matrix.asset_suffix }}"
+          asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
+          staging_dir="dist/${archive_root}"
+
+          mkdir -p "$staging_dir"
+
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$staging_dir/"
+          chmod +x "$staging_dir/${{ matrix.binary_name }}"
+
+          cp README.md "$staging_dir/"
+
+          tar -C dist -czf "dist/${asset_name}" "$archive_root"
+
+      - name: Package archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.prepare-release.outputs.tag }}"
+          $archiveRoot = "bfiles-$tag-${{ matrix.asset_suffix }}"
+          $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
+          $stagingDir = Join-Path "dist" $archiveRoot
+
+          New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" $stagingDir
+          Copy-Item README.md $stagingDir
+
+          Compress-Archive -Path $stagingDir -DestinationPath "dist/$assetName" -Force
+
+      - name: Upload release asset (Unix)
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
+
+          gh release upload "$tag" "dist/${asset_name}" --clobber
+
+      - name: Upload release asset (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.prepare-release.outputs.tag }}"
+          $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
+
+          gh release upload $tag "dist/$assetName" --clobber
+
+  publish-release:
+    name: Publish release
+    needs:
+      - prepare-release
+      - build-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare-release.outputs.tag }}"
+
+          gh release edit "$tag" --draft=false --latest=true
