@@ -7,6 +7,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CARGO_TERM_COLOR: always
 
 jobs:
   test:
@@ -15,27 +16,29 @@ jobs:
     permissions:
       contents: read
     strategy:
-        fail-fast: false
-        matrix:
-          include:
-            - name: ubuntu-24.04
-              runner: ubuntu-24.04
-            - name: macos-15
-              runner: macos-15
-            - name: windows-2025-vs2026
-              runner: windows-2025-vs2026
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-24.04
+            runner: ubuntu-24.04
+          - name: macos-15
+            runner: macos-15
+          - name: windows-2025-vs2026
+            runner: windows-2025-vs2026
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run test suite
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
 
   prepare-release:
     name: Prepare release
@@ -45,15 +48,18 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tag: ${{ github.ref_name }}
+      tag: ${{ steps.release.outputs.tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Ensure GitHub draft release exists
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -62,6 +68,8 @@ jobs:
 
           tag="${GITHUB_REF_NAME}"
           repo="${GITHUB_REPOSITORY}"
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
           if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$repo" --verify-tag --title "$tag" --generate-notes --draft
@@ -100,7 +108,7 @@ jobs:
             archive_extension: tar.gz
 
           - name: windows-x86_64
-            runner: windows-2025-vs2026
+            runner: windows-2025
             target: x86_64-pc-windows-msvc
             binary_name: bfiles.exe
             asset_suffix: windows-x86_64
@@ -111,6 +119,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare-release.outputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -130,31 +140,57 @@ jobs:
           archive_root="bfiles-${tag}-${{ matrix.asset_suffix }}"
           asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
           staging_dir="dist/${archive_root}"
+          binary_path="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
 
+          test -f "$binary_path"
+
+          rm -rf dist
           mkdir -p "$staging_dir"
 
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$staging_dir/"
+          cp "$binary_path" "$staging_dir/"
           chmod +x "$staging_dir/${{ matrix.binary_name }}"
 
-          cp README.md "$staging_dir/"
+          if [ -f README.md ]; then
+            cp README.md "$staging_dir/"
+          fi
 
           tar -C dist -czf "dist/${asset_name}" "$archive_root"
+
+          test -f "dist/${asset_name}"
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $tag = "${{ needs.prepare-release.outputs.tag }}"
           $archiveRoot = "bfiles-$tag-${{ matrix.asset_suffix }}"
           $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
           $stagingDir = Join-Path "dist" $archiveRoot
+          $binaryPath = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+
+          if (!(Test-Path $binaryPath)) {
+            throw "Binary was not found at $binaryPath"
+          }
+
+          if (Test-Path "dist") {
+            Remove-Item "dist" -Recurse -Force
+          }
 
           New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" $stagingDir
-          Copy-Item README.md $stagingDir
+          Copy-Item $binaryPath $stagingDir
 
-          Compress-Archive -Path $stagingDir -DestinationPath "dist/$assetName" -Force
+          if (Test-Path "README.md") {
+            Copy-Item README.md $stagingDir
+          }
+
+          Compress-Archive -Path "$stagingDir/*" -DestinationPath "dist/$assetName" -Force
+
+          if (!(Test-Path "dist/$assetName")) {
+            throw "Archive was not created at dist/$assetName"
+          }
 
       - name: Upload release asset (Unix)
         if: runner.os != 'Windows'
@@ -165,9 +201,10 @@ jobs:
           set -euo pipefail
 
           tag="${{ needs.prepare-release.outputs.tag }}"
+          repo="${GITHUB_REPOSITORY}"
           asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
 
-          gh release upload "$tag" "dist/${asset_name}" --clobber
+          gh release upload "$tag" "dist/${asset_name}" --repo "$repo" --clobber
 
       - name: Upload release asset (Windows)
         if: runner.os == 'Windows'
@@ -175,10 +212,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $tag = "${{ needs.prepare-release.outputs.tag }}"
+          $repo = $env:GITHUB_REPOSITORY
           $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
 
-          gh release upload $tag "dist/$assetName" --clobber
+          gh release upload $tag "dist/$assetName" --repo $repo --clobber
 
   publish-release:
     name: Publish release
@@ -199,5 +239,6 @@ jobs:
           set -euo pipefail
 
           tag="${{ needs.prepare-release.outputs.tag }}"
+          repo="${GITHUB_REPOSITORY}"
 
-          gh release edit "$tag" --draft=false --latest=true
+          gh release edit "$tag" --repo "$repo" --draft=false --latest=true
