@@ -43,7 +43,7 @@ jobs:
         with:
           ref: ${{ steps.resolve-tag.outputs.tag }}
 
-      - name: Ensure GitHub release exists
+      - name: Ensure GitHub draft release exists
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -53,7 +53,11 @@ jobs:
           tag="${{ steps.resolve-tag.outputs.tag }}"
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+            gh release create "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --generate-notes \
+              --draft
           fi
 
   build-release:
@@ -72,18 +76,21 @@ jobs:
             binary_name: bfiles
             asset_suffix: linux-x86_64
             archive_extension: tar.gz
+
           - name: macos-arm64
             runner: macos-15
             target: aarch64-apple-darwin
             binary_name: bfiles
             asset_suffix: macos-arm64
             archive_extension: tar.gz
+
           - name: macos-x86_64
             runner: macos-15-intel
             target: x86_64-apple-darwin
             binary_name: bfiles
             asset_suffix: macos-x86_64
             archive_extension: tar.gz
+
           - name: windows-x86_64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
@@ -117,8 +124,10 @@ jobs:
           staging_dir="dist/${archive_root}"
 
           mkdir -p "$staging_dir"
+
           cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "$staging_dir/"
           chmod +x "$staging_dir/${{ matrix.binary_name }}"
+
           cp README.md "$staging_dir/"
 
           tar -C dist -czf "dist/${asset_name}" "$archive_root"
@@ -133,6 +142,7 @@ jobs:
           $stagingDir = Join-Path "dist" $archiveRoot
 
           New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" $stagingDir
           Copy-Item README.md $stagingDir
 
@@ -161,3 +171,24 @@ jobs:
           $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
 
           gh release upload $tag "dist/$assetName" --clobber
+
+  publish-release:
+    name: Publish release
+    needs:
+      - prepare-release
+      - build-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.prepare-release.outputs.tag }}"
+
+          gh release edit "$tag" --draft=false --latest=true
