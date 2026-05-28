@@ -45,23 +45,13 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tag: ${{ steps.resolve-tag.outputs.tag }}
+      tag: ${{ github.ref_name }}
 
     steps:
-      - name: Resolve release tag
-        id: resolve-tag
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tag="${GITHUB_REF_NAME}"
-
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.resolve-tag.outputs.tag }}
+          ref: ${{ github.ref }}
 
       - name: Ensure GitHub draft release exists
         env:
@@ -70,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${{ steps.resolve-tag.outputs.tag }}"
+          tag="${GITHUB_REF_NAME}"
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" \
