@@ -113,6 +113,7 @@ jobs:
 
           tag="${{ needs.prepare-release.outputs.tag }}"
           archive_root="bfiles-${tag}-${{ matrix.asset_suffix }}"
+          asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
           staging_dir="dist/${archive_root}"
 
           mkdir -p "$staging_dir"
@@ -120,7 +121,7 @@ jobs:
           chmod +x "$staging_dir/${{ matrix.binary_name }}"
           cp README.md "$staging_dir/"
 
-          tar -C dist -czf "dist/${archive_root}.tar.gz" "$archive_root"
+          tar -C dist -czf "dist/${asset_name}" "$archive_root"
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
@@ -128,13 +129,14 @@ jobs:
         run: |
           $tag = "${{ needs.prepare-release.outputs.tag }}"
           $archiveRoot = "bfiles-$tag-${{ matrix.asset_suffix }}"
+          $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
           $stagingDir = Join-Path "dist" $archiveRoot
 
           New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" $stagingDir
           Copy-Item README.md $stagingDir
 
-          Compress-Archive -Path $stagingDir -DestinationPath "dist/$archiveRoot.zip" -Force
+          Compress-Archive -Path $stagingDir -DestinationPath "dist/$assetName" -Force
 
       - name: Upload release asset (Unix)
         if: runner.os != 'Windows'
@@ -145,9 +147,9 @@ jobs:
           set -euo pipefail
 
           tag="${{ needs.prepare-release.outputs.tag }}"
-          archive_root="bfiles-${tag}-${{ matrix.asset_suffix }}"
+          asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
 
-          gh release upload "$tag" "dist/${archive_root}.tar.gz" --clobber
+          gh release upload "$tag" "dist/${asset_name}" --clobber
 
       - name: Upload release asset (Windows)
         if: runner.os == 'Windows'
@@ -156,6 +158,6 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ needs.prepare-release.outputs.tag }}"
-          $archiveRoot = "bfiles-$tag-${{ matrix.asset_suffix }}"
+          $assetName = "bfiles-${{ matrix.asset_suffix }}.zip"
 
-          gh release upload $tag "dist/$archiveRoot.zip" --clobber
+          gh release upload $tag "dist/$assetName" --clobber
