@@ -1,13 +1,13 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = "https://github.com/JohnKesko/bfiles"
+$Repo = "JohnKesko/bfiles"
 $Asset = "bfiles-windows-x86_64.zip"
 $BinName = "bfiles.exe"
 $InstallDir = Join-Path $env:USERPROFILE ".local\bin"
 
 $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
-
 $TempDir = Join-Path $env:TEMP ("bfiles-install-" + [System.Guid]::NewGuid().ToString())
+
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
 try {
@@ -31,7 +31,8 @@ try {
 
     if (($UserPath -split ";") -notcontains $InstallDir) {
         [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
-        Write-Host "Added $InstallDir to your user PATH. Restart your terminal before running bfiles."
+        Write-Host "Added $InstallDir to your user PATH."
+        Write-Host "Restart your terminal before running it."
     }
 
     Write-Host "Installed bfiles to $InstallDir"

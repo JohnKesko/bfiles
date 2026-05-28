@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="https://github.com/JohnKesko/bfiles"
+REPO="JohnKesko/bfiles"
 BIN_NAME="bfiles"
 INSTALL_DIR="${BFILES_INSTALL_DIR:-$HOME/.local/bin}"
 
