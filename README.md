@@ -5,6 +5,17 @@ Provide a path to find which folders eating up the most space.
 
 Uses concurrent traversal (crossbeam or rayon) to scan directories quickly.
 
+## Downloads
+
+Tagged releases publish prebuilt binaries on the GitHub Releases page for:
+
+- Linux x86_64
+- macOS arm64
+- macOS x86_64
+- Windows x86_64
+
+Push a tag like `v0.1.0` to trigger the release workflow.
+
 ## Platform Support
 
 The app is intended to work on macOS, Linux, and Windows.
