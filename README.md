@@ -50,6 +50,7 @@ bfiles -p <PATH> [OPTIONS]
 * `-d, --max_depth <N>` — Limit traversal depth
 * `-t, --top <N>` — Show top N root groups
 * `-h, --help` — Show help
+* `-V, --version` — Show version
 
 Output is grouped by the immediate child directories under the scanned root path. Each group shows up to 5 of its largest descendant directories.
 

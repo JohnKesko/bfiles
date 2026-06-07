@@ -1,6 +1,6 @@
+use super::scan;
 use super::{Results, TraversalEngine};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,44 +17,30 @@ fn file_or_dir(query: &Path, depth: usize, max_depth: usize, counter: &AtomicU64
         return 0;
     }
 
-    let mut read_dir = match fs::read_dir(query) {
-        Ok(rd) => rd,
+    let entries = match scan::read_dir_entries(query) {
+        Ok(entries) => entries,
         Err(_) => return 0,
     };
 
-    let first = match read_dir.next() {
-        Some(Ok(entry)) => entry,
-        _ => {
-            results.insert(query.to_path_buf(), 0);
-            return 0;
-        }
-    };
+    if entries.is_empty() {
+        results.insert(query.to_path_buf(), 0);
+        return 0;
+    }
 
-    let entries: Vec<_> = std::iter::once(first).chain(read_dir.filter_map(Result::ok)).collect();
+    // One atomic update per directory instead of per entry.
+    counter.fetch_add(entries.len() as u64, Ordering::Relaxed);
 
     let total = entries
         .par_iter()
         .map(|entry| {
-            // Count entries
-            counter.fetch_add(1, Ordering::Relaxed);
-
-            let path = entry.path();
-
-            let file_type = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(_) => return 0,
-            };
-
-            if file_type.is_symlink() {
+            if entry.is_symlink {
                 return 0;
             }
 
-            if file_type.is_dir() {
-                file_or_dir(&path, depth + 1, max_depth, counter, results)
-            } else if file_type.is_file() {
-                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            if entry.is_dir {
+                file_or_dir(&query.join(&entry.name), depth + 1, max_depth, counter, results)
             } else {
-                0
+                entry.size
             }
         })
         .sum();

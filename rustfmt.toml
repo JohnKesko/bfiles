@@ -1,8 +1,6 @@
-fn_args_layout = "Compressed"
-max_width = 120
-struct_lit_width = 100
-chain_width = 100
-array_width = 20
+# rustfmt.toml
 
-wrap_comments = true
-comment_width = 100
+max_width = 160
+use_small_heuristics = "Max"
+tab_spaces = 8
+style_edition = "2024"

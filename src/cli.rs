@@ -1,101 +1,51 @@
 use crate::traverse::crossbeam::CrossbeamTraversal;
 use crate::traverse::{Results, TraversalEngine, rayon::RayonTraversal};
+use clap::{Parser, ValueEnum};
 use dashmap::DashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::{env, io, path::PathBuf, process::exit};
+use std::{io, path::PathBuf};
 
 use indicatif::ProgressBar;
 
-use crate::print::{self, print_help};
+use crate::print::print_tree;
 use crate::progress::start_progress;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EngineType {
     Rayon,
     Crossbeam,
 }
 
+#[derive(Parser)]
+#[command(
+    name = "bfiles",
+    version,
+    about = "Fast parallel directory size analyzer",
+    after_help = "Examples:\n  bfiles -p .\n  bfiles -p . -e rayon -t 20\n  bfiles --path ./my-folder --max_depth 2 --top 10"
+)]
 pub struct Config {
+    /// Path to analyze
+    #[arg(short, long)]
     pub path: PathBuf,
-    pub max_depth: usize,
-    pub top_n: usize,
+
+    /// Traversal engine
+    #[arg(short, long, value_enum, default_value = "crossbeam")]
     pub engine: EngineType,
-}
 
-pub fn parse_args() -> Config {
-    parse_args_from(env::args().skip(1))
-}
+    /// Limit traversal depth [default: unlimited]
+    #[arg(short = 'd', long = "max_depth", default_value_t = usize::MAX, hide_default_value = true)]
+    pub max_depth: usize,
 
-fn parse_args_from<I>(args: I) -> Config
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut args = args.into_iter().peekable();
-
-    let mut path = None;
-    let mut max_depth: Option<usize> = None;
-    let mut top_n: Option<usize> = None;
-    let mut engine: Option<EngineType> = None;
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--path" | "-p" => {
-                if let Some(p) = args.next() {
-                    path = Some(PathBuf::from(p));
-                }
-            }
-            "--max_depth" | "-d" => {
-                if let Some(d) = args.next() {
-                    max_depth = d.parse::<usize>().ok();
-                }
-            }
-            "--top" | "-t" => {
-                if let Some(n) = args.next() {
-                    top_n = n.parse::<usize>().ok();
-                }
-            }
-            "--engine" | "-e" => {
-                if let Some(e) = args.next() {
-                    match e.as_str() {
-                        "rayon" => engine = Some(EngineType::Rayon),
-                        "crossbeam" => engine = Some(EngineType::Crossbeam),
-                        _ => {
-                            eprintln!("Invalid engine: {}", e);
-                            exit(1);
-                        }
-                    }
-                }
-            }
-            "--help" | "-h" => {
-                print_help();
-                exit(0);
-            }
-            _ => {
-                eprintln!("Unknown argument: {}", arg);
-                exit(1);
-            }
-        }
-    }
-
-    let path = path.unwrap_or_else(|| {
-        eprintln!("Error: --path/-p is required\n");
-        print_help();
-        exit(1);
-    });
-
-    Config {
-        path,
-        max_depth: max_depth.unwrap_or(usize::MAX),
-        top_n: top_n.unwrap_or(10),
-        engine: engine.unwrap_or(EngineType::Crossbeam),
-    }
+    /// Show top N root groups
+    #[arg(short = 't', long = "top", default_value_t = 10)]
+    pub top_n: usize,
 }
 
 pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
-    let config = parse_args();
+    let config = Config::parse();
 
     let engine: Box<dyn TraversalEngine> = match config.engine {
         EngineType::Rayon => Box::new(RayonTraversal),
@@ -119,7 +69,7 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
     let items = counter.load(Ordering::Relaxed);
     println!("Traversed {} items in {:.2?}", items, duration);
 
-    print::print_tree(&config.path, results.as_ref(), config.top_n);
+    print_tree(&config.path, results.as_ref(), config.top_n);
 
     Ok(())
 }
@@ -128,18 +78,13 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
 mod tests {
     use super::*;
 
+    fn parse(args: &[&str]) -> Config {
+        Config::try_parse_from(std::iter::once("bfiles").chain(args.iter().copied())).unwrap()
+    }
+
     #[test]
     fn parses_short_flags() {
-        let config = parse_args_from([
-            "-p".to_string(),
-            ".".to_string(),
-            "-t".to_string(),
-            "10".to_string(),
-            "-d".to_string(),
-            "2".to_string(),
-            "-e".to_string(),
-            "rayon".to_string(),
-        ]);
+        let config = parse(&["-p", ".", "-t", "10", "-d", "2", "-e", "rayon"]);
 
         assert_eq!(config.path, PathBuf::from("."));
         assert_eq!(config.top_n, 10);
@@ -149,16 +94,17 @@ mod tests {
 
     #[test]
     fn parses_long_flags_unchanged() {
-        let config = parse_args_from([
-            "--path".to_string(),
-            "./demo".to_string(),
-            "--top".to_string(),
-            "3".to_string(),
-        ]);
+        let config = parse(&["--path", "./demo", "--top", "3"]);
 
         assert_eq!(config.path, PathBuf::from("./demo"));
         assert_eq!(config.top_n, 3);
         assert_eq!(config.max_depth, usize::MAX);
         assert_eq!(config.engine, EngineType::Crossbeam);
+    }
+
+    #[test]
+    fn verifies_arg_definitions() {
+        use clap::CommandFactory;
+        Config::command().debug_assert();
     }
 }

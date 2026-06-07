@@ -4,12 +4,25 @@ version = "0.2.1"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 crossbeam = "0.8.4"
 dashmap = "6"
 indicatif = "0.18.4"
 num_cpus = "1.17.0"
 rayon = "1.11.0"
 
+# macOS fast path: getattrlistbulk returns name + type + size in bulk,
+# eliminating the per-file stat syscall. Linux/other use the std fallback.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 
 [lib]
 path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

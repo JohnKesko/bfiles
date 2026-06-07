@@ -1,6 +1,6 @@
+use super::scan;
 use super::{Results, TraversalEngine};
 use crossbeam::channel::{self, RecvTimeoutError};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -46,41 +46,39 @@ impl TraversalEngine for CrossbeamTraversal {
                             continue;
                         }
 
-                        let mut total = 0;
-
-                        let read_dir = match fs::read_dir(&path) {
-                            Ok(rd) => rd,
+                        let entries = match scan::read_dir_entries(&path) {
+                            Ok(entries) => entries,
                             Err(_) => {
                                 pending.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
                         };
 
-                        for entry in read_dir.filter_map(Result::ok) {
-                            counter.fetch_add(1, Ordering::Relaxed);
+                        let mut total = 0;
+                        let local_count = entries.len() as u64;
 
-                            let file_type = match entry.file_type() {
-                                Ok(ft) => ft,
-                                Err(_) => continue,
-                            };
-
-                            if file_type.is_symlink() {
+                        for entry in entries {
+                            if entry.is_symlink {
                                 continue;
                             }
 
-                            if file_type.is_dir() {
+                            if entry.is_dir {
                                 pending.fetch_add(1, Ordering::AcqRel);
-                                if tx.send((entry.path(), depth + 1)).is_err() {
+                                if tx.send((path.join(&entry.name), depth + 1)).is_err() {
                                     pending.fetch_sub(1, Ordering::AcqRel);
                                     break;
                                 }
-                            } else if file_type.is_file() {
-                                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                            } else {
+                                total += entry.size;
                             }
                         }
 
                         // Store file-only size for this directory
                         results.insert(path.clone(), total);
+
+                        // One atomic update per directory instead of per entry,
+                        // to avoid hammering the shared counter's cache line.
+                        counter.fetch_add(local_count, Ordering::Relaxed);
 
                         // Mark this directory as processed
                         pending.fetch_sub(1, Ordering::AcqRel);

@@ -1,5 +1,6 @@
 pub mod crossbeam;
 pub mod rayon;
+pub mod scan;
 
 use dashmap::DashMap;
 use std::path::PathBuf;
