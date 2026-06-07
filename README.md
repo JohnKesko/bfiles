@@ -41,6 +41,7 @@ The app is intended to work on macOS, Linux, and Windows.
 ```
 bfiles --path <PATH> [OPTIONS]
 bfiles -p <PATH> [OPTIONS]
+bfiles upgrade            # update to the latest release in place
 ```
 
 ## Options
