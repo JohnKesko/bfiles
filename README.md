@@ -5,7 +5,7 @@ Provide a path to find which folders are using the most disk space.
 
 ## Installation
 
-### macOS and Linux
+### macOS and Linux (including Raspberry Pi)
 
 ```
 curl -fsSL https://raw.githubusercontent.com/johnkesko/bfiles/master/install.sh | sh
