@@ -14,6 +14,9 @@ case "$OS" in
       x86_64|amd64)
         ASSET="bfiles-linux-x86_64.tar.gz"
         ;;
+      aarch64|arm64)
+        ASSET="bfiles-linux-aarch64.tar.gz"
+        ;;
       *)
         echo "Unsupported Linux architecture: $ARCH" >&2
         exit 1

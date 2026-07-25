@@ -24,6 +24,7 @@ irm https://raw.githubusercontent.com/johnkesko/bfiles/master/install.ps1 | iex
 Prebuilt binaries are available:
 
 * Linux x86_64
+* Linux aarch64 (Raspberry Pi 3/4/5 and other ARM64 boards, static binary)
 * macOS arm64
 * macOS x86_64
 * Windows x86_64
