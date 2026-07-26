@@ -37,6 +37,21 @@ The app is intended to work on macOS, Linux, and Windows.
 * Windows and Linux use binary size units (`KB = 1024`)
 * CI runs the test suite on all three operating systems
 
+## Remote scanning
+
+Point bfiles at an scp-style address and the scan runs on that machine over ssh:
+
+```
+bfiles -p 'user@host:/srv/storage' -t 10
+```
+
+The remote host does the entire scan and aggregation natively — only a tiny
+summary crosses the network, so scanning a NAS this way is orders of magnitude
+faster than scanning an SMB/NFS mount of it. Requires bfiles (v0.4+) on the
+remote host; ssh keys, agents, and password prompts work as they do for plain
+`ssh`. All flags (`-t`, `-d`, `-e`, `--exclude`, `--include-cloud`) apply on
+the remote side.
+
 ## How sizes are measured
 
 * Sizes are logical file sizes (what `ls -l` shows), not disk blocks. Sparse files count at their full logical size, so numbers match Finder rather than `du`.
@@ -57,7 +72,7 @@ bfiles upgrade            # update to the latest release in place
 
 ## Options
 
-* `-p, --path <PATH>` — Path to analyze
+* `-p, --path <PATH>` — Path to analyze; `user@host:/path` scans a remote host over ssh
 * `-e, --engine <ENGINE>` — `rayon` or `crossbeam` (default: crossbeam)
 * `-d, --max_depth <N>` — Limit traversal depth
 * `-t, --top <N>` — Show top N root groups
