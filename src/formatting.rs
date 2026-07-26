@@ -81,14 +81,26 @@ pub fn get_root_group(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(first.as_os_str()))
 }
 
+/// Label for the pseudo-group holding files that sit directly in the scanned root.
+pub const ROOT_FILES_LABEL: &str = "(files)";
+
+#[derive(Debug)]
+pub struct TreeSummary {
+    /// Size of everything under the scanned root, independent of `top_n` truncation.
+    pub total_size: u64,
+    pub groups: Vec<DirectoryGroup>,
+}
+
 pub fn group_entries_by_root(
     results: &DashMap<PathBuf, u64>, root: &Path, top_n: usize, child_limit: usize,
-) -> Vec<DirectoryGroup> {
+) -> TreeSummary {
     if top_n == 0 {
-        return Vec::new();
+        return TreeSummary { total_size: 0, groups: Vec::new() };
     }
 
     let mut grouped = BTreeMap::<PathBuf, GroupAccumulator>::new();
+    let mut root_total = 0u64;
+    let mut direct_children_total = 0u64;
 
     for entry in results.iter() {
         let path = entry.key();
@@ -99,6 +111,7 @@ pub fn group_entries_by_root(
         };
 
         if relative_path.as_os_str().is_empty() {
+            root_total = size;
             continue;
         }
 
@@ -110,6 +123,7 @@ pub fn group_entries_by_root(
 
         if relative_path.components().count() == 1 {
             group.total_size = Some(size);
+            direct_children_total += size;
         } else {
             group.children.push(DirectoryRow { relative_path, size });
         }
@@ -133,9 +147,21 @@ pub fn group_entries_by_root(
         })
         .collect();
 
+    // Files sitting directly in the scanned root belong to no child directory;
+    // surface them as their own pseudo-group instead of dropping them.
+    let root_files = root_total.saturating_sub(direct_children_total);
+    if root_files > 0 {
+        groups.push(DirectoryGroup {
+            root: PathBuf::from(ROOT_FILES_LABEL),
+            total_size: root_files,
+            children: Vec::new(),
+        });
+    }
+
     groups.sort_by(|a, b| b.total_size.cmp(&a.total_size).then_with(|| a.root.cmp(&b.root)));
     groups.truncate(top_n);
-    groups
+
+    TreeSummary { total_size: root_total, groups }
 }
 
 pub fn calculate_column_width(groups: &[DirectoryGroup]) -> usize {
@@ -152,9 +178,11 @@ pub fn calculate_column_width(groups: &[DirectoryGroup]) -> usize {
     width
 }
 
-pub fn format_tree_output(groups: &[DirectoryGroup]) -> String {
-    let path_width = calculate_column_width(groups);
-    let size_width = calculate_size_width(groups);
+pub fn format_tree_output(summary: &TreeSummary) -> String {
+    let groups = &summary.groups[..];
+    let total_label = "Total";
+    let path_width = calculate_column_width(groups).max(total_label.len());
+    let size_width = calculate_size_width(groups).max(format_size(summary.total_size).len());
     let mut lines = Vec::new();
 
     for (index, group) in groups.iter().enumerate() {
@@ -174,6 +202,9 @@ pub fn format_tree_output(groups: &[DirectoryGroup]) -> String {
             lines.push(String::new());
         }
     }
+
+    lines.push(String::new());
+    lines.push(format_row(total_label, summary.total_size, path_width, size_width));
 
     lines.join("\n")
 }
@@ -248,7 +279,7 @@ mod tests {
             (plugin.join(".next"), 650),
         ]);
 
-        let groups = group_entries_by_root(&results, &root, 3, 2);
+        let groups = group_entries_by_root(&results, &root, 3, 2).groups;
 
         assert_eq!(groups.len(), 3);
 
@@ -297,15 +328,17 @@ mod tests {
         let empty_root = PathBuf::from("root").join("empty");
         let empty_results = build_results(&[(empty_root.clone(), 0)]);
 
-        assert!(group_entries_by_root(&empty_results, &empty_root, 10, 5).is_empty());
+        assert!(group_entries_by_root(&empty_results, &empty_root, 10, 5).groups.is_empty());
 
         let root = PathBuf::from("root").join("files");
         let results = build_results(&[
             (root.clone(), 200),
             (root.join("plugins"), 200),
         ]);
-        let groups = group_entries_by_root(&results, &root, 10, 5);
+        let summary = group_entries_by_root(&results, &root, 10, 5);
+        let groups = summary.groups;
 
+        assert_eq!(summary.total_size, 200);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].root, PathBuf::from("plugins"));
         assert_eq!(groups[0].total_size, 200);
@@ -315,15 +348,38 @@ mod tests {
     #[test]
     fn tree_output_uses_platform_paths() {
         let child_path = PathBuf::from("certbuddy").join(".next");
-        let groups = vec![DirectoryGroup {
-            root: PathBuf::from("certbuddy"),
+        let summary = TreeSummary {
             total_size: 1_020,
-            children: vec![DirectoryRow { relative_path: child_path.clone(), size: 1_010 }],
-        }];
+            groups: vec![DirectoryGroup {
+                root: PathBuf::from("certbuddy"),
+                total_size: 1_020,
+                children: vec![DirectoryRow { relative_path: child_path.clone(), size: 1_010 }],
+            }],
+        };
 
-        let output = format_tree_output(&groups);
+        let output = format_tree_output(&summary);
 
         assert!(output.contains(&PathBuf::from("certbuddy").display().to_string()));
         assert!(output.contains(&format!("- {}", child_path.display())));
+        assert!(output.contains("Total"));
+    }
+
+    #[test]
+    fn root_files_become_pseudo_group_and_total_covers_everything() {
+        let root = PathBuf::from("root");
+        let results = build_results(&[
+            // Root entry holds the grand total: 50_000 of loose files + sub's 100.
+            (root.clone(), 50_100),
+            (root.join("sub"), 100),
+        ]);
+
+        let summary = group_entries_by_root(&results, &root, 10, 5);
+
+        assert_eq!(summary.total_size, 50_100);
+        assert_eq!(summary.groups.len(), 2);
+        assert_eq!(summary.groups[0].root, PathBuf::from(ROOT_FILES_LABEL));
+        assert_eq!(summary.groups[0].total_size, 50_000);
+        assert!(summary.groups[0].children.is_empty());
+        assert_eq!(summary.groups[1].root, PathBuf::from("sub"));
     }
 }

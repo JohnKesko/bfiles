@@ -8,7 +8,10 @@ use std::time::Duration;
 pub struct CrossbeamTraversal;
 
 impl TraversalEngine for CrossbeamTraversal {
-    fn run(&self, root: &Path, max_depth: usize, counter: &AtomicU64, results: &Results) {
+    fn run(
+        &self, root: &Path, max_depth: usize, counter: &AtomicU64, errors: &AtomicU64,
+        excludes: &[PathBuf], results: &Results,
+    ) {
         let (tx, rx) = channel::unbounded::<(PathBuf, usize)>();
 
         // Track outstanding work (directories)
@@ -24,6 +27,8 @@ impl TraversalEngine for CrossbeamTraversal {
                 let tx = tx.clone();
 
                 let counter = counter;
+                let errors = errors;
+                let excludes = excludes;
                 let results = results;
                 let pending = &pending;
 
@@ -49,6 +54,7 @@ impl TraversalEngine for CrossbeamTraversal {
                         let entries = match scan::read_dir_entries(&path) {
                             Ok(entries) => entries,
                             Err(_) => {
+                                errors.fetch_add(1, Ordering::Relaxed);
                                 pending.fetch_sub(1, Ordering::AcqRel);
                                 continue;
                             }
@@ -63,8 +69,14 @@ impl TraversalEngine for CrossbeamTraversal {
                             }
 
                             if entry.is_dir {
+                                let child = path.join(&entry.name);
+
+                                if excludes.iter().any(|excluded| excluded == &child) {
+                                    continue;
+                                }
+
                                 pending.fetch_add(1, Ordering::AcqRel);
-                                if tx.send((path.join(&entry.name), depth + 1)).is_err() {
+                                if tx.send((child, depth + 1)).is_err() {
                                     pending.fetch_sub(1, Ordering::AcqRel);
                                     break;
                                 }

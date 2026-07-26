@@ -45,6 +45,15 @@ pub struct Config {
     /// Show top N root groups
     #[arg(short = 't', long = "top", default_value_t = 10)]
     pub top_n: usize,
+
+    /// Exclude a directory from the scan (repeatable)
+    #[arg(long = "exclude", value_name = "PATH")]
+    pub exclude: Vec<PathBuf>,
+
+    /// Also scan cloud-synced folders (~/Library/CloudStorage), which are
+    /// skipped by default because listing them is extremely slow
+    #[arg(long = "include-cloud")]
+    pub include_cloud: bool,
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
@@ -67,19 +76,43 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
         std::process::exit(2);
     });
 
+    if !path.is_dir() {
+        eprintln!("error: '{}' is not an accessible directory", path.display());
+        std::process::exit(2);
+    }
+
+    // Canonicalize so exclude paths (always absolute) can match scanned paths.
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+
+    let cloud_excludes: Vec<PathBuf> = if config.include_cloud {
+        Vec::new()
+    } else {
+        cloud_storage_dirs()
+    };
+
+    let user_excludes: Vec<PathBuf> = config
+        .exclude
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
+
+    let excludes: Vec<PathBuf> =
+        cloud_excludes.iter().chain(user_excludes.iter()).cloned().collect();
+
     let engine: Box<dyn TraversalEngine> = match config.engine {
         EngineType::Rayon => Box::new(RayonTraversal),
         EngineType::Crossbeam => Box::new(CrossbeamTraversal),
     };
 
     let counter = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let results: Arc<Results> = Arc::new(DashMap::new());
 
     let progress_handle = start_progress(&pb, Arc::clone(&counter), Arc::clone(&done));
 
     let start = std::time::Instant::now();
-    engine.run(&path, config.max_depth, &counter, &results);
+    engine.run(&path, config.max_depth, &counter, &errors, &excludes, &results);
     let duration = start.elapsed();
 
     done.store(true, Ordering::Relaxed);
@@ -89,9 +122,35 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
     let items = counter.load(Ordering::Relaxed);
     println!("Traversed {} items in {:.2?}", items, duration);
 
+    let failed = errors.load(Ordering::Relaxed);
+    if failed > 0 {
+        let noun = if failed == 1 { "directory" } else { "directories" };
+        eprintln!("warning: {failed} {noun} could not be read; reported sizes are underestimated");
+    }
+
+    // Only report skips that were actually inside the scanned tree.
+    for skipped in cloud_excludes.iter().filter(|e| e.starts_with(&path) && **e != path && e.is_dir()) {
+        eprintln!("note: skipped {} (cloud storage; pass --include-cloud to scan it)", skipped.display());
+    }
+    for skipped in user_excludes.iter().filter(|e| e.starts_with(&path) && **e != path && e.is_dir()) {
+        eprintln!("note: skipped {} (--exclude)", skipped.display());
+    }
+
     print_tree(&path, results.as_ref(), config.top_n);
 
     Ok(())
+}
+
+/// Cloud-synced folders that macOS backs with File Provider daemons. Listing
+/// them goes through per-provider IPC instead of the disk and can take minutes.
+fn cloud_storage_dirs() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+
+    let library = PathBuf::from(home).join("Library");
+
+    vec![library.join("CloudStorage"), library.join("Mobile Documents")]
 }
 
 /// Asset infix used in the release file names (e.g. `bfiles-macos-arm64.tar.gz`).
@@ -160,6 +219,19 @@ mod tests {
         assert_eq!(config.top_n, 3);
         assert_eq!(config.max_depth, usize::MAX);
         assert_eq!(config.engine, EngineType::Crossbeam);
+    }
+
+    #[test]
+    fn parses_exclude_and_include_cloud() {
+        let config =
+            parse(&["-p", ".", "--exclude", "/a", "--exclude", "/b", "--include-cloud"]);
+
+        assert!(config.include_cloud);
+        assert_eq!(config.exclude, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+
+        let defaults = parse(&["-p", "."]);
+        assert!(!defaults.include_cloud);
+        assert!(defaults.exclude.is_empty());
     }
 
     #[test]

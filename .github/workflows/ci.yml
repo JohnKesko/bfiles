@@ -163,10 +163,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${{ needs.prepare-release.outputs.tag }}"
-          archive_root="bfiles-${tag}-${{ matrix.asset_suffix }}"
           asset_name="bfiles-${{ matrix.asset_suffix }}.tar.gz"
-          staging_dir="dist/${archive_root}"
+          staging_dir="dist/stage"
           binary_path="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
 
           test -f "$binary_path"
@@ -177,11 +175,16 @@ jobs:
           cp "$binary_path" "$staging_dir/"
           chmod +x "$staging_dir/${{ matrix.binary_name }}"
 
+          members="${{ matrix.binary_name }}"
           if [ -f README.md ]; then
             cp README.md "$staging_dir/"
+            members="$members README.md"
           fi
 
-          tar -C dist -czf "dist/${asset_name}" "$archive_root"
+          # The binary must sit at the archive root: `bfiles upgrade`
+          # (self_update) only extracts an entry named exactly "bfiles".
+          # This also matches the Windows zip, which was already flat.
+          tar -C "$staging_dir" -czf "dist/${asset_name}" $members
 
           test -f "dist/${asset_name}"
 
