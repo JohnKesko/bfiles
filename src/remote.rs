@@ -143,11 +143,7 @@ pub fn read_serve_report(reader: impl BufRead, mut on_progress: impl FnMut(u64))
         match lines.next() {
                 Some(Ok(header)) if header == PROTOCOL_HEADER => {}
                 _ => {
-                        return Err(io::Error::other(
-                                "remote did not answer with a bfiles scan.\n\
-                 Make sure bfiles is installed and up to date on the remote host:\n\
-                 curl -fsSL https://raw.githubusercontent.com/johnkesko/bfiles/master/install.sh | sh",
-                        ));
+                        return Err(io::Error::other("remote did not answer with a bfiles scan"));
                 }
         }
 
@@ -217,7 +213,27 @@ fn remote_command(target: &RemoteTarget, config: &Config) -> String {
                 parts.push(shell_quote(&exclude.display().to_string()));
         }
 
-        parts.join(" ")
+        // install.sh puts bfiles in ~/.local/bin (and cargo in ~/.cargo/bin),
+        // which non-interactive ssh shells do not have on PATH. Appended, not
+        // prepended, so they never shadow a binary already on the remote PATH.
+        // $HOME and $PATH expand on the remote side.
+        format!(r#"env PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin" {}"#, parts.join(" "))
+}
+
+/// Turn an unusable remote answer into a message that names the actual
+/// culprit, using ssh's exit code: 255 = ssh itself failed, 127 = command not
+/// found, 2 = bfiles rejected the arguments (usually a pre-0.4 version).
+fn classify_remote_failure(destination: &str, code: Option<i32>, fallback: io::Error) -> io::Error {
+        match code {
+                Some(255) => io::Error::other(format!("ssh could not connect or log in to '{destination}' (see the ssh message above).\n\
+                         Fix ssh access first — `ssh {destination}` must work — then rerun.")),
+                Some(127) => io::Error::other(format!("bfiles is not installed on '{destination}'.\n\
+                         Install it there:\n  curl -fsSL https://raw.githubusercontent.com/johnkesko/bfiles/master/install.sh | sh")),
+                Some(2) => io::Error::other(format!("bfiles on '{destination}' rejected the request (see the message above).\n\
+                         If it does not understand '--serve', it is older than v0.4.0 — run 'bfiles upgrade' on that host.\n\
+                         Otherwise check that the remote path exists.")),
+                _ => fallback,
+        }
 }
 
 /// Run the scan on the remote host and render the streamed summary locally.
@@ -241,14 +257,19 @@ pub fn run_remote(target: &RemoteTarget, config: &Config) -> io::Result<()> {
         pb.finish_and_clear();
 
         let status = child.wait()?;
-        let report = result?;
+
+        let report = match result {
+                Ok(report) => report,
+                Err(read_error) => return Err(classify_remote_failure(&target.destination, status.code(), read_error)),
+        };
 
         if !report.complete {
-                return Err(io::Error::other(format!(
+                let fallback = io::Error::other(format!(
                         "remote scan on '{}' ended before finishing (exit: {})",
                         target.destination,
                         status.code().map_or_else(|| "killed".to_string(), |c| c.to_string()),
-                )));
+                ));
+                return Err(classify_remote_failure(&target.destination, status.code(), fallback));
         }
 
         println!("Traversed {} items in {:.2?} on {}", report.items, Duration::from_millis(report.duration_ms), target.destination);
@@ -338,9 +359,39 @@ mod tests {
         }
 
         #[test]
-        fn missing_header_yields_install_hint() {
+        fn missing_header_is_an_error() {
                 let err = read_serve_report(Cursor::new("bash: bfiles: command not found\n"), |_| {}).unwrap_err();
 
-                assert!(err.to_string().contains("install.sh"));
+                assert!(err.to_string().contains("did not answer"));
+        }
+
+        #[test]
+        fn failures_are_classified_by_ssh_exit_code() {
+                let fallback = || io::Error::other("generic failure");
+
+                let auth = classify_remote_failure("pi01", Some(255), fallback());
+                assert!(auth.to_string().contains("ssh could not connect or log in"));
+
+                let missing = classify_remote_failure("pi01", Some(127), fallback());
+                assert!(missing.to_string().contains("install.sh"));
+
+                let too_old = classify_remote_failure("pi01", Some(2), fallback());
+                assert!(too_old.to_string().contains("bfiles upgrade"));
+
+                let unknown = classify_remote_failure("pi01", Some(1), fallback());
+                assert!(unknown.to_string().contains("generic failure"));
+        }
+
+        #[test]
+        fn remote_command_extends_path_for_non_interactive_shells() {
+                use clap::Parser;
+
+                let config = Config::try_parse_from(["bfiles", "-p", "unused"]).unwrap();
+                let target = RemoteTarget { destination: "pi01".to_string(), path: "/srv/storage".to_string() };
+
+                let command = remote_command(&target, &config);
+
+                assert!(command.starts_with(r#"env PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin" bfiles --serve"#));
+                assert!(command.contains("-p '/srv/storage'"));
         }
 }
