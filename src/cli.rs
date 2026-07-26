@@ -1,14 +1,13 @@
 use crate::traverse::crossbeam::CrossbeamTraversal;
-use crate::traverse::{Results, TraversalEngine, rayon::RayonTraversal};
+use crate::traverse::{TraversalEngine, rayon::RayonTraversal};
 use clap::{Parser, Subcommand, ValueEnum};
-use dashmap::DashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::{io, path::PathBuf};
 
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::print::print_tree;
 use crate::progress::start_progress;
@@ -24,7 +23,7 @@ pub enum EngineType {
     name = "bfiles",
     version,
     about = "Fast parallel directory size analyzer",
-    after_help = "Examples:\n  bfiles -p .\n  bfiles -p . -e rayon -t 20\n  bfiles --path ./my-folder --max_depth 2 --top 10"
+    after_help = "Examples:\n  bfiles -p .\n  bfiles -p . -e rayon -t 20\n  bfiles --path ./my-folder --max_depth 2 --top 10\n  bfiles -p ~ --exclude ~/Library --exclude ~/.cache\n  bfiles -p ~ --include-cloud\n  bfiles upgrade"
 )]
 pub struct Config {
     #[command(subcommand)]
@@ -62,19 +61,21 @@ pub enum Command {
     Upgrade,
 }
 
-pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
+pub fn run() -> Result<(), io::Error> {
     let config = Config::parse();
 
     if let Some(Command::Upgrade) = config.command {
-        pb.finish_and_clear();
         return upgrade();
     }
 
-    let path = config.path.unwrap_or_else(|| {
-        // Mirror clap's own missing-required-argument behaviour (exit code 2).
-        eprintln!("error: a PATH is required\n\nUsage: bfiles --path <PATH> [OPTIONS]\n       bfiles upgrade\n\nFor more information, try '--help'.");
+    let Some(path) = config.path else {
+        // Bare `bfiles` shows the full help like `--help`, but still exits
+        // non-zero (2, matching clap's missing-argument convention) so
+        // scripts don't mistake it for a successful run.
+        use clap::CommandFactory;
+        Config::command().print_help().ok();
         std::process::exit(2);
-    });
+    };
 
     if !path.is_dir() {
         eprintln!("error: '{}' is not an accessible directory", path.display());
@@ -107,12 +108,16 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
     let counter = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
-    let results: Arc<Results> = Arc::new(DashMap::new());
+
+    // Created only now, so help/error/upgrade paths never flash a spinner.
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::with_template("{spinner:.green} {pos} items [{elapsed_precise}]").unwrap());
+    pb.set_message("Searching...");
 
     let progress_handle = start_progress(&pb, Arc::clone(&counter), Arc::clone(&done));
 
     let start = std::time::Instant::now();
-    engine.run(&path, config.max_depth, &counter, &errors, &excludes, &results);
+    let tree = engine.run(&path, config.max_depth, &counter, &errors, &excludes);
     let duration = start.elapsed();
 
     done.store(true, Ordering::Relaxed);
@@ -136,7 +141,7 @@ pub fn run(pb: ProgressBar) -> Result<(), io::Error> {
         eprintln!("note: skipped {} (--exclude)", skipped.display());
     }
 
-    print_tree(&path, results.as_ref(), config.top_n);
+    print_tree(&tree, config.top_n);
 
     Ok(())
 }

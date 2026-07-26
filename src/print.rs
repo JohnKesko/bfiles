@@ -1,14 +1,12 @@
-use std::path::Path;
+use crate::formatting::{DEFAULT_CHILDREN_PER_GROUP, format_tree_output, summarize_tree};
+use crate::traverse::tree::DirTree;
 
-use crate::formatting::{DEFAULT_CHILDREN_PER_GROUP, format_tree_output, group_entries_by_root};
-use crate::traverse::Results;
-
-pub fn print_tree(root: &Path, results: &Results, top_n: usize) {
+pub fn print_tree(tree: &DirTree, top_n: usize) {
     if top_n == 0 {
         return;
     }
 
-    let summary = group_entries_by_root(results, root, top_n, DEFAULT_CHILDREN_PER_GROUP);
+    let summary = summarize_tree(tree, top_n, DEFAULT_CHILDREN_PER_GROUP);
 
     println!();
 

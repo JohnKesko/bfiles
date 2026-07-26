@@ -1,12 +1,11 @@
 [package]
 name = "bfiles"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 crossbeam = "0.8.4"
-dashmap = "6"
 self_update = { version = "0.44", default-features = false, features = [
     "ureq",
     "rustls",

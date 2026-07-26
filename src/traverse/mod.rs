@@ -1,32 +1,59 @@
 pub mod crossbeam;
 pub mod rayon;
 pub mod scan;
+pub mod tree;
 
-use dashmap::DashMap;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 
-pub type Results = DashMap<PathBuf, u64>;
+use tree::DirTree;
 
 pub trait TraversalEngine {
-    /// `errors` counts directories that could not be read; their contents are
-    /// missing from `results`, so callers should warn when it is non-zero.
-    /// Directories whose full path equals an entry in `excludes` are not descended into.
+    /// Scans `path` and returns the aggregated directory tree. `errors` counts
+    /// directories that could not be read; their contents are missing from the
+    /// tree, so callers should warn when it is non-zero. Directories matching
+    /// an entry in `excludes` are not descended into.
     fn run(
-        &self, path: &std::path::Path, max_depth: usize, counter: &AtomicU64, errors: &AtomicU64,
-        excludes: &[PathBuf], results: &Results,
-    );
+        &self, path: &Path, max_depth: usize, counter: &AtomicU64, errors: &AtomicU64,
+        excludes: &[PathBuf],
+    ) -> DirTree;
 }
 
-#[cfg(all(test, unix))]
+/// True when `parent`/`name` is one of the excluded paths. Compares components
+/// so no joined path has to be allocated per directory.
+pub(crate) fn is_excluded(excludes: &[PathBuf], parent: &Path, name: &OsStr) -> bool {
+    excludes
+        .iter()
+        .any(|excluded| excluded.file_name() == Some(name) && excluded.parent() == Some(parent))
+}
+
+#[cfg(test)]
 mod tests {
+    use super::tree::ROOT;
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::Ordering;
 
+    fn run_engines(base: &Path, excludes: &[PathBuf], check: impl Fn(&DirTree, u64)) {
+        let engines: [&dyn TraversalEngine; 2] =
+            [&crossbeam::CrossbeamTraversal, &rayon::RayonTraversal];
+
+        for engine in engines {
+            let counter = AtomicU64::new(0);
+            let errors = AtomicU64::new(0);
+
+            let tree = engine.run(base, usize::MAX, &counter, &errors, excludes);
+
+            check(&tree, errors.load(Ordering::Relaxed));
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn engines_count_unreadable_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
         let base = std::env::temp_dir().join(format!("bfiles-locked-test-{}", std::process::id()));
         let locked = base.join("locked");
 
@@ -35,19 +62,10 @@ mod tests {
         fs::write(locked.join("hidden.bin"), vec![0u8; 1024]).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
 
-        let engines: [&dyn TraversalEngine; 2] =
-            [&crossbeam::CrossbeamTraversal, &rayon::RayonTraversal];
-
-        for engine in engines {
-            let counter = AtomicU64::new(0);
-            let errors = AtomicU64::new(0);
-            let results: Results = DashMap::new();
-
-            engine.run(&base, usize::MAX, &counter, &errors, &[], &results);
-
-            assert_eq!(errors.load(Ordering::Relaxed), 1, "unreadable directory must be counted");
-            assert_eq!(results.get(&base).map(|e| *e.value()), Some(2048));
-        }
+        run_engines(&base, &[], |tree, errors| {
+            assert_eq!(errors, 1, "unreadable directory must be counted");
+            assert_eq!(tree.size(ROOT), 2048, "only readable bytes are measured");
+        });
 
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&base).unwrap();
@@ -65,20 +83,13 @@ mod tests {
         fs::write(skip.join("ignored.bin"), vec![0u8; 999]).unwrap();
 
         let excludes = vec![skip.clone()];
-        let engines: [&dyn TraversalEngine; 2] =
-            [&crossbeam::CrossbeamTraversal, &rayon::RayonTraversal];
 
-        for engine in engines {
-            let counter = AtomicU64::new(0);
-            let errors = AtomicU64::new(0);
-            let results: Results = DashMap::new();
-
-            engine.run(&base, usize::MAX, &counter, &errors, &excludes, &results);
-
-            assert_eq!(errors.load(Ordering::Relaxed), 0);
-            assert_eq!(results.get(&base).map(|e| *e.value()), Some(100));
-            assert!(!results.contains_key(&skip), "excluded directory must not be scanned");
-        }
+        run_engines(&base, &excludes, |tree, errors| {
+            assert_eq!(errors, 0);
+            assert_eq!(tree.size(ROOT), 100);
+            assert!(tree.find(Path::new("keep")).is_some());
+            assert!(tree.find(Path::new("skip")).is_none(), "excluded directory must not be scanned");
+        });
 
         fs::remove_dir_all(&base).unwrap();
     }
