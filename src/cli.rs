@@ -199,7 +199,8 @@ fn expand_tilde(path: &std::path::Path) -> PathBuf {
                 return path.to_path_buf();
         }
 
-        let Some(home) = std::env::var_os("HOME") else {
+        // HOME on unix; USERPROFILE on Windows.
+        let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
                 return path.to_path_buf();
         };
 
@@ -313,7 +314,7 @@ mod tests {
         fn expands_leading_tilde() {
                 use std::path::Path;
 
-                let home = PathBuf::from(std::env::var_os("HOME").expect("HOME set in tests"));
+                let home = PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).expect("HOME or USERPROFILE is set"));
 
                 assert_eq!(expand_tilde(Path::new("~")), home);
                 assert_eq!(expand_tilde(Path::new("~/Library")), home.join("Library"));
