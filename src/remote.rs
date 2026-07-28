@@ -28,7 +28,7 @@ use std::time::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::{Config, EngineType};
-use crate::formatting::{DirectoryGroup, DirectoryRow, TreeSummary, format_tree_output};
+use crate::formatting::{DirectoryGroup, DirectoryRow, TreeSummary, format_detailed_output, format_summary_table};
 
 pub const PROTOCOL_HEADER: &str = "bfiles-serve 1";
 
@@ -195,7 +195,9 @@ fn remote_command(target: &RemoteTarget, config: &Config) -> String {
                 vec!["bfiles".to_string(), "--serve".to_string(), "-p".to_string(), shell_quote(&target.path), "-t".to_string(), config.top_n.to_string()];
 
         if config.max_depth != usize::MAX {
-                parts.push("-d".to_string());
+                // Long form: stable across versions, unlike the short flag,
+                // which moved from max_depth to --details in v0.5.
+                parts.push("--max_depth".to_string());
                 parts.push(config.max_depth.to_string());
         }
 
@@ -290,7 +292,11 @@ pub fn run_remote(target: &RemoteTarget, config: &Config) -> io::Result<()> {
                 return Ok(());
         }
 
-        println!("{}", format_tree_output(&report.summary));
+        if config.details {
+                println!("{}", format_detailed_output(&report.summary));
+        } else {
+                println!("{}", format_summary_table(&report.summary));
+        }
 
         Ok(())
 }

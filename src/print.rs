@@ -1,7 +1,7 @@
-use crate::formatting::{DEFAULT_CHILDREN_PER_GROUP, format_tree_output, summarize_tree};
+use crate::formatting::{DEFAULT_CHILDREN_PER_GROUP, format_detailed_output, format_summary_table, summarize_tree};
 use crate::traverse::tree::DirTree;
 
-pub fn print_tree(tree: &DirTree, top_n: usize) {
+pub fn print_tree(tree: &DirTree, top_n: usize, details: bool) {
         if top_n == 0 {
                 return;
         }
@@ -15,5 +15,9 @@ pub fn print_tree(tree: &DirTree, top_n: usize) {
                 return;
         }
 
-        println!("{}", format_tree_output(&summary));
+        if details {
+                println!("{}", format_detailed_output(&summary));
+        } else {
+                println!("{}", format_summary_table(&summary));
+        }
 }

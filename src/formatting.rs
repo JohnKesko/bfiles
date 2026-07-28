@@ -171,11 +171,55 @@ pub fn calculate_column_width(groups: &[DirectoryGroup]) -> usize {
         width
 }
 
-pub fn format_tree_output(summary: &TreeSummary) -> String {
+/// Default view: a compact `Folder / Size` table of the top groups, ending
+/// with the grand total.
+pub fn format_summary_table(summary: &TreeSummary) -> String {
         let groups = &summary.groups[..];
+        let folder_header = "Folder";
+        let size_header = "Size";
         let total_label = "Total";
-        let path_width = calculate_column_width(groups).max(total_label.len());
-        let size_width = calculate_size_width(groups).max(format_size(summary.total_size).len());
+
+        let path_width = groups.iter().map(|group| group.root.display().to_string().len()).max().unwrap_or(0).max(folder_header.len()).max(total_label.len());
+        let size_width = groups
+                .iter()
+                .map(|group| format_size(group.total_size).len())
+                .max()
+                .unwrap_or(0)
+                .max(size_header.len())
+                .max(format_size(summary.total_size).len());
+
+        let mut lines = Vec::new();
+
+        lines.push(format!("{folder_header:<path_width$} {size_header:>size_width$}"));
+
+        for group in groups {
+                lines.push(format_row(&group.root.display().to_string(), group.total_size, path_width, size_width));
+        }
+
+        lines.push(format_row(total_label, summary.total_size, path_width, size_width));
+
+        lines.join("\n")
+}
+
+/// `--details` view: the summary table followed by the per-group breakdown
+/// under a `Details` heading.
+pub fn format_detailed_output(summary: &TreeSummary) -> String {
+        let groups = &summary.groups[..];
+
+        let mut lines = vec![format_summary_table(summary)];
+
+        lines.push(String::new());
+        lines.push("Details".to_string());
+        lines.push(String::new());
+
+        let path_width = calculate_column_width(groups);
+        let size_width = calculate_size_width(groups);
+        lines.extend(format_groups(groups, path_width, size_width));
+
+        lines.join("\n")
+}
+
+fn format_groups(groups: &[DirectoryGroup], path_width: usize, size_width: usize) -> Vec<String> {
         let mut lines = Vec::new();
 
         for (index, group) in groups.iter().enumerate() {
@@ -191,10 +235,7 @@ pub fn format_tree_output(summary: &TreeSummary) -> String {
                 }
         }
 
-        lines.push(String::new());
-        lines.push(format_row(total_label, summary.total_size, path_width, size_width));
-
-        lines.join("\n")
+        lines
 }
 
 fn calculate_size_width(groups: &[DirectoryGroup]) -> usize {
@@ -327,22 +368,43 @@ mod tests {
                 assert_eq!(summary.groups[1].root, PathBuf::from("sub"));
         }
 
+        fn photos_and_docs() -> TreeSummary {
+                TreeSummary {
+                        total_size: 2_000,
+                        groups: vec![
+                                DirectoryGroup {
+                                        root: PathBuf::from("photos"),
+                                        total_size: 1_500,
+                                        children: vec![DirectoryRow { relative_path: PathBuf::from("photos").join("raw"), size: 1_200 }],
+                                },
+                                DirectoryGroup { root: PathBuf::from("docs"), total_size: 500, children: Vec::new() },
+                        ],
+                }
+        }
+
         #[test]
-        fn tree_output_uses_platform_paths() {
-                let child_path = PathBuf::from("certbuddy").join(".next");
-                let summary = TreeSummary {
-                        total_size: 1_020,
-                        groups: vec![DirectoryGroup {
-                                root: PathBuf::from("certbuddy"),
-                                total_size: 1_020,
-                                children: vec![DirectoryRow { relative_path: child_path.clone(), size: 1_010 }],
-                        }],
-                };
+        fn summary_table_is_the_compact_default_view() {
+                let output = format_summary_table(&photos_and_docs());
 
-                let output = format_tree_output(&summary);
-
-                assert!(output.contains(&PathBuf::from("certbuddy").display().to_string()));
-                assert!(output.contains(&format!("- {}", child_path.display())));
+                assert!(output.starts_with("Folder"));
+                assert!(output.contains("Size"));
+                assert!(output.contains("photos"));
                 assert!(output.contains("Total"));
+                assert!(!output.contains("Details"), "the table view has no details section");
+                assert!(!output.contains("- "), "the table view has no child rows");
+        }
+
+        #[test]
+        fn detailed_output_shows_table_then_details_with_platform_paths() {
+                let child_label = format!("- {}", PathBuf::from("photos").join("raw").display());
+
+                let output = format_detailed_output(&photos_and_docs());
+
+                let folder_pos = output.find("Folder").expect("table header");
+                let details_pos = output.find("Details").expect("details heading");
+                let child_pos = output.find(&child_label).expect("detail row");
+
+                assert!(folder_pos < details_pos && details_pos < child_pos, "table first, then details");
+                assert_eq!(output.matches("Total").count(), 1, "total appears only in the table");
         }
 }

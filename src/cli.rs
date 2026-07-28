@@ -25,7 +25,7 @@ pub enum EngineType {
         name = "bfiles",
         version,
         about = "Fast parallel directory size analyzer",
-        after_help = "Examples:\n  bfiles -p .\n  bfiles -p . -e rayon -t 20\n  bfiles --path ./my-folder --max_depth 2 --top 10\n  bfiles -p ~ --exclude ~/Library --exclude ~/.cache\n  bfiles -p ~ --include-cloud\n  bfiles -p 'user@host:/srv/storage'    (scan runs on the remote host over ssh)\n  bfiles upgrade"
+        after_help = "Examples:\n  bfiles -p .\n  bfiles -p . -d                        (include the per-folder breakdown)\n  bfiles -p . -e rayon -t 20\n  bfiles --path ./my-folder --max_depth 2 --top 10\n  bfiles -p ~ --exclude \"~/Library|~/.cache\"\n  bfiles -p ~ --include-cloud\n  bfiles -p 'user@host:/srv/storage'    (scan runs on the remote host over ssh)\n  bfiles upgrade"
 )]
 pub struct Config {
         #[command(subcommand)]
@@ -40,15 +40,20 @@ pub struct Config {
         pub engine: EngineType,
 
         /// Limit traversal depth [default: unlimited]
-        #[arg(short = 'd', long = "max_depth", default_value_t = usize::MAX, hide_default_value = true)]
+        #[arg(short = 'm', long = "max_depth", default_value_t = usize::MAX, hide_default_value = true)]
         pub max_depth: usize,
 
         /// Show top N root groups
         #[arg(short = 't', long = "top", default_value_t = 10)]
         pub top_n: usize,
 
-        /// Exclude a directory from the scan (repeatable)
-        #[arg(long = "exclude", value_name = "PATH")]
+        /// Show the per-folder breakdown below the summary table
+        #[arg(short = 'd', long = "details")]
+        pub details: bool,
+
+        /// Exclude directories from the scan; separate multiple with `|`
+        /// (e.g. --exclude "~/Library|~/.cache") or repeat the flag
+        #[arg(long = "exclude", value_name = "PATHS", value_delimiter = '|')]
         pub exclude: Vec<PathBuf>,
 
         /// Also scan cloud-synced folders (~/Library/CloudStorage), which are
@@ -84,6 +89,9 @@ pub fn run() -> Result<(), io::Error> {
                 std::process::exit(2);
         };
 
+        // Quoted arguments reach us with `~` unexpanded by the shell.
+        let path = expand_tilde(&path);
+
         // scp-style paths like user@host:/srv/data run the scan over ssh.
         if !config.serve
                 && let Some(target) = remote::parse_remote_path(&path)
@@ -101,7 +109,14 @@ pub fn run() -> Result<(), io::Error> {
 
         let cloud_excludes: Vec<PathBuf> = if config.include_cloud { Vec::new() } else { cloud_storage_dirs() };
 
-        let user_excludes: Vec<PathBuf> = config.exclude.iter().map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())).collect();
+        let user_excludes: Vec<PathBuf> = config
+                .exclude
+                .iter()
+                .map(|p| {
+                        let expanded = expand_tilde(p);
+                        std::fs::canonicalize(&expanded).unwrap_or(expanded)
+                })
+                .collect();
 
         let excludes: Vec<PathBuf> = cloud_excludes.iter().chain(user_excludes.iter()).cloned().collect();
 
@@ -168,9 +183,32 @@ pub fn run() -> Result<(), io::Error> {
                 eprintln!("note: {note}");
         }
 
-        print_tree(&tree, config.top_n);
+        print_tree(&tree, config.top_n, config.details);
 
         Ok(())
+}
+
+/// Expand a leading `~` to $HOME. Shells skip tilde expansion inside quotes,
+/// so values like --exclude "~/Library|~/.cache" arrive with the `~` intact.
+fn expand_tilde(path: &std::path::Path) -> PathBuf {
+        let Some(raw) = path.to_str() else {
+                return path.to_path_buf();
+        };
+
+        if raw != "~" && !raw.starts_with("~/") {
+                return path.to_path_buf();
+        }
+
+        let Some(home) = std::env::var_os("HOME") else {
+                return path.to_path_buf();
+        };
+
+        let mut expanded = PathBuf::from(home);
+        if raw.len() > 2 {
+                expanded.push(&raw[2..]);
+        }
+
+        expanded
 }
 
 /// Cloud-synced folders that macOS backs with File Provider daemons. Listing
@@ -233,7 +271,7 @@ mod tests {
 
         #[test]
         fn parses_short_flags() {
-                let config = parse(&["-p", ".", "-t", "10", "-d", "2", "-e", "rayon"]);
+                let config = parse(&["-p", ".", "-t", "10", "-m", "2", "-e", "rayon"]);
 
                 assert_eq!(config.command, None);
                 assert_eq!(config.path, Some(PathBuf::from(".")));
@@ -262,6 +300,32 @@ mod tests {
                 let defaults = parse(&["-p", "."]);
                 assert!(!defaults.include_cloud);
                 assert!(defaults.exclude.is_empty());
+        }
+
+        #[test]
+        fn splits_exclude_values_on_pipes() {
+                let config = parse(&["-p", ".", "--exclude", "~/Library|~/.cache", "--exclude", "/extra"]);
+
+                assert_eq!(config.exclude, vec![PathBuf::from("~/Library"), PathBuf::from("~/.cache"), PathBuf::from("/extra")]);
+        }
+
+        #[test]
+        fn expands_leading_tilde() {
+                use std::path::Path;
+
+                let home = PathBuf::from(std::env::var_os("HOME").expect("HOME set in tests"));
+
+                assert_eq!(expand_tilde(Path::new("~")), home);
+                assert_eq!(expand_tilde(Path::new("~/Library")), home.join("Library"));
+                assert_eq!(expand_tilde(Path::new("/absolute/~path")), PathBuf::from("/absolute/~path"));
+                assert_eq!(expand_tilde(Path::new("relative")), PathBuf::from("relative"));
+        }
+
+        #[test]
+        fn parses_details_flag() {
+                assert!(parse(&["-p", ".", "-d"]).details);
+                assert!(parse(&["-p", ".", "--details"]).details);
+                assert!(!parse(&["-p", "."]).details, "summary table is the default view");
         }
 
         #[test]
